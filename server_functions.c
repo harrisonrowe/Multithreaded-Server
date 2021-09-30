@@ -3,8 +3,6 @@
 // Create and establish a server process and await for an incomming connection
 void initServer(struct sockaddr_in* server, int* serverSocket, int port){
     // Print init message to server
-    printf("\n");
-    printLog("2803ICT Assignment 1 - Milestone 2: By Harry Rowe.");
     printLog("Initialising server...");
     // CREATE SOCKET
     // Create TCP socket (using address family and socket stream)
@@ -50,3 +48,21 @@ void connectClient(struct sockaddr_in* client, int* clientSocket, int serverSock
         printLog("User has connected!");
     }
 }
+
+// Rotate long integer right
+unsigned int rightRotate(unsigned int n, unsigned int bits){
+    return (n >> bits)|(n << 32 - bits);
+}
+
+// Function for trial division method
+void trialDivision(unsigned int n){
+    int f = 2;
+    while (n > 1){
+        if (n % f == 0){
+            printf("Factor found: %d\n", f);
+            n /= f;
+        } else {
+            f++;
+        }
+    }
+} 

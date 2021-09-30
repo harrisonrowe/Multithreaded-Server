@@ -1,7 +1,7 @@
-all: game_client game_server
+all: client server
 
-game_client: game_client.c client_functions.c functions.c
-	gcc -o game_client game_client.c client_functions.c functions.c
+client: client.c client_functions.c functions.c
+	gcc -o client client.c client_functions.c functions.c
 
-game_server: game_server.c server_functions.c functions.c
-	gcc -o game_server game_server.c server_functions.c functions.c
+server: server.c server_functions.c functions.c
+	gcc -o server server.c server_functions.c functions.c

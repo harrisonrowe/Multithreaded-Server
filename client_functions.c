@@ -3,8 +3,6 @@
 // Initialise client and connect to specific server
 void initClient(struct sockaddr_in* server, int* clientSocket, int port, char* host){
     // Print init message to clients
-    printf("\n");
-    printLog("2803ICT Assignment 1 - Milestone 2: By Harry Rowe.");
     printLog("Initialising client...");
     // CREATE SOCKET
     // Get IP address of server name (hostname) the client wishes to connect to
@@ -32,4 +30,25 @@ void initClient(struct sockaddr_in* server, int* clientSocket, int port, char* h
     } else {
         printLog("Connected to server.");
     }
+}
+
+// Validate that the client has input a 32 bit signed integer
+unsigned int validateClientInput(char clientMessage[SIZE]){
+    // Check each character in string
+    for (int i = 0; clientMessage[i] != '\0'; i++){
+        if (i == 0 && clientMessage[i] == '-'){
+            // Negative number entered
+            return 0;
+        } else if (!isdigit(clientMessage[i])){
+            // Character is not a number
+            return 0;
+        }
+    }
+    // Ensure value assigned to n is between 1 and UINT max
+    unsigned int n = atoi(clientMessage);
+    if (n > UINT_MAX || n < 1){
+        return 0;
+    }
+    // String validated, accept client input
+    return n;
 }
