@@ -2,17 +2,21 @@
 #define PROTOTYPES_H
 
 // Client prototypes
-void initClient(struct sockaddr_in*, int*, int, char*);
+void* slotConsumer(void*);
 unsigned int validateClientInput(char*);
 
 // Server prototypes
-void initServer(struct sockaddr_in*, int*, int);
-void connectClient(struct sockaddr_in*, int*, int);
+void* factorise(void*);
 unsigned int rightRotate(unsigned int, unsigned int);
-void trialDivision(unsigned int);
+
+// Stack prototypes
+struct Stack* stackInit(int);
+int stackFull(struct Stack*);
+int stackEmpty(struct Stack*);
+void stackPush(struct Stack*, int);
+int stackPop(struct Stack*);
 
 // Main function prototypes
-void tokenString(char***, char*, int*);
 void printLog(char*);
 void printError(char*);
 

@@ -7,16 +7,13 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <sys/select.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+#include <sys/time.h>
 #include <limits.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <fcntl.h>
 
 // Include files
 #include "prototypes.h"
@@ -26,16 +23,30 @@
 #define SIZE 1024 // Max size for char arrays
 
 // Shared memory
-
 struct Memory{
-    // Client exit status
-    int clientStatus;
     // Variables
     unsigned int number;
-    unsigned int slot[10];
-    // Client Flags
+    int slot[10];
+    int activeQueries;
+    // Flags
     int clientFlag;
     int serverFlag[10];
+    // Slot stack
+    struct Stack* slotAllocation;
+};
+
+// Data package to sent to shared memory
+struct ThreadData{
+    unsigned int n;
+    int slotNumber;
+    struct Memory* Shm;
+};
+
+// Stack for slots
+struct Stack {
+    int* stack;
+    int cap;
+    int top;
 };
 
 #endif

@@ -1,27 +1,19 @@
 #include "includes.h"
 
+// Semaphore classes used in threads
+sem_t *full[10];
+sem_t *empty[10];
+sem_t *mutex[10];
+
+// Mutex for client side message buffer
+pthread_mutex_t mutexBuffer;
+
 int main(int argc, char* argv[]){
     // Welcome text 
     printf("\n");
     printLog("2803ICT Assignment 2: By Harry Rowe.");
-    
-    // Validate command line input
-    if (argc != 3){
-        printError("Insuffficient command line arguments.");
-    }
 
-    // Client socket structure
-    struct sockaddr_in server;
-    // Used for bind of client socket
-    int res = 0;
-    // Hold client socket descriptor entry
-    int clientSocket = 0;
-    // Port/server variables
-    int port = atoi(argv[1]);
-    // Command line variables
-    char serverName[SIZE];
-    // Copy from command line
-    strcpy(serverName, argv[2]);
+    // SHARED MEMORY SETUP //
 
     // Set up shared memory
     key_t ShmKey = ftok(".", 'a'); // Shared memory key using token of current path
@@ -42,49 +34,194 @@ int main(int argc, char* argv[]){
         printLog("Client has attached shared memory.");
     }
 
-    // Initiate client
-    initClient(&server, &clientSocket, port, serverName);
-    
-    // If communication with server is successful, run a loop, listening for messages
-    while(1){
+    // SEMAPHORE & MUTEX SETUP //
 
-        // Request user for 32 bit integer
-        char clientMessage[SIZE] = "";
-        printLog("Please enter an unsigned 32-bit integer:");
-        printf("> ");
-        scanf("%[^\n]%*c", clientMessage);
-        printf("\n");
-
-        // Check if client wishes to quit
-        if (strcmp(clientMessage, "q") == 0){
-            // Process disconnection - send to server
-            printLog("Disconnecting...");
-            ShmPtr->clientFlag = 1;
-            ShmPtr->clientStatus = 1;
-            break;
+    // Init mutex
+    pthread_mutex_init(&mutexBuffer, NULL);
+    // Init semaphores
+    char** sem1 = (char**) calloc(10, sizeof(char*));
+    char** sem2 = (char**) calloc(10, sizeof(char*));
+    char** sem3 = (char**) calloc(10, sizeof(char*));
+    // Create unique semaphore name for each semaphore
+    for (int i = 0; i < 10; i++){
+        // Allocate space for each token
+        sem1[i] = (char*) calloc(10, sizeof(char));
+        sem2[i] = (char*) calloc(10, sizeof(char));
+        sem3[i] = (char*) calloc(10, sizeof(char));
+        // Assign each prefix
+        char sem1Prefix[10] = "full";
+        char sem2Prefix[10] = "empty";
+        char sem3Prefix[10] = "mutex";
+        // Append i to each prefix for unique name
+        char append = 'a'+i;
+        strncat(sem1Prefix, &append, 1);
+        strncat(sem2Prefix, &append, 1);
+        strncat(sem3Prefix, &append, 1);
+        // Assign to each semaphore char array
+        sem1[i] = sem1Prefix;
+        sem2[i] = sem2Prefix;
+        sem3[i] = sem3Prefix;
+        // Post when server has data to write
+        full[i] = sem_open(sem1Prefix, O_CREAT, 0666, 0);
+        // Server can only write to 1 slot at a time
+        empty[i] = sem_open(sem2Prefix, O_CREAT, 0666, 1);
+        // Mutal exclusion
+        mutex[i] = sem_open(sem3Prefix, O_CREAT, 0666, 1);
+        // Handle if empty val or mutex val starts at 0
+        int emptyVal, mutexVal;
+        sem_getvalue(empty[i], &emptyVal);
+        sem_getvalue(mutex[i], &mutexVal);
+        while (emptyVal < 1){
+            sem_post(empty[i]);
+            emptyVal++;
         }
-
-        // Validate client input
-        unsigned int num = validateClientInput(clientMessage);
-        if (num == 0){
-            printLog("Please enter valid input.");
-            continue;
+        while (mutexVal < 1){
+            sem_post(mutex[i]);
+            mutexVal++;
         }
-        // Update shared memory number
-        ShmPtr->number = num;
-        // Notify server that client has updated shared memory
-        ShmPtr->clientFlag = 1;
-        
-        // Wait whilst server reads data
-        while (ShmPtr->clientFlag == 1);
-        
-
     }
 
-    // Detach and remove/destroy shared memory
+    // Client ready
+    printLog("Client setup.");
+    // Request users to enter 32-bit integers
+    printLog("Please continually enter unsigned 32-bit integers or 'q' to quit:");
+
+    // Await and send client input to server
+    while(1){
+        
+        // Request user for 32 bit integer
+        char clientMessage[SIZE] = "";
+        scanf("%[^\n]%*c", clientMessage);
+
+        // Respond to client request
+        // Check if client wishes to quit
+        if (strcmp(clientMessage, "") == 0){
+            printLog("Please enter a valid 32-bit integer.");
+            // Clear scanf buffer
+            while (getchar() != '\n');
+        } else if (strcmp(clientMessage, "q") == 0){
+            // Check if client wishes to quit
+            printLog("Client requested to leave...");
+            // Check active queries
+            if (ShmPtr->activeQueries > 0){
+                printLog("Quitting after threads finish...");
+            }
+            ShmPtr->clientFlag = -1;
+            break;
+        } else if (ShmPtr->activeQueries == 10){
+            // Client has requested another query but server is busy.
+            printLog("Server busy. Please await for a query to complete.");
+        } else if (strcmp(clientMessage, "0") == 0){
+            // Client has requested test mode
+            if (ShmPtr->activeQueries != 0){
+                // Queries still in progress
+                printLog("Queries in progress - test mode not activated.");
+            } else {
+                // Run test mode
+                printLog("Test mode activated.");
+
+            }
+        } else {
+            // Pass integer to server through shared memory
+            // Validate client input
+            unsigned int num = validateClientInput(clientMessage);
+            if (num == 0){
+                printLog("Please enter valid input.");
+                continue;
+            }
+            // Update shared memory number
+            ShmPtr->number = num;
+            // Indicate to server that new data is ready
+            ShmPtr->clientFlag = 1;
+            // Await response back from server
+            while (ShmPtr->clientFlag == 1);
+
+            // Set data to be sent to thread
+            struct ThreadData data = {0, ShmPtr->number, ShmPtr};
+            // Allocate consumer for particular slot
+            pthread_t thread;
+            // Create thread
+            if (pthread_create(&thread, NULL, &slotConsumer, (void*) &data) != 0){
+                printError("Failed to create client thread.");
+            }
+        }
+    }
+
+    // Wait for active threads to finish
+    while (ShmPtr->activeQueries > 0);
+
+    // Close mutex
+    pthread_mutex_destroy(&mutexBuffer);
+    // Close and unlink semaphores
+    for (int i = 0; i < 10; i++){
+        sem_close(full[i]);
+        sem_close(empty[i]);
+        sem_close(mutex[i]);
+        sem_unlink(sem1[i]);
+        sem_unlink(sem2[i]);
+        sem_unlink(sem3[i]);
+    }
+    // Detach shared memory
     shmdt((void*) ShmPtr);
-    shmctl(ShmId, IPC_RMID, NULL);
-    // Close client socket
-    close(clientSocket);
+    // Close client
+    printLog("Client exiting.");
     return 0;
+}
+
+// Consumer function
+void* slotConsumer(void* args){
+    // Retrieve data sent from main thread
+    struct ThreadData *data = (struct ThreadData*) args;
+    // Save data from thread to prevent overwriting data
+    int finishedThreads = 0;
+    int slotNumber = data->slotNumber;
+    // Start timer
+    struct timeval begin, end;
+    gettimeofday(&begin, 0);
+    // Listen for server response loop
+    while (1){
+        // Await for slot buffer to be filled
+        sem_wait(full[slotNumber]);
+        sem_wait(mutex[slotNumber]);
+        // Assign factor
+        int factor = data->Shm->slot[slotNumber];
+        // Check if thread is finished
+        if (factor == -1){
+            finishedThreads++;
+            // If all 32 threads finished, destroy thread
+            if (finishedThreads == 32){
+                // Indicate to server that data has been read
+                sem_post(mutex[slotNumber]);
+                sem_post(empty[slotNumber]);
+                data->Shm->serverFlag[slotNumber] = 0;
+                // All threads completed
+                break;
+            }
+        } else if (factor > 0){
+            // Print factor - use mutex lock to print to screen
+            pthread_mutex_lock(&mutexBuffer);
+            printf("\tData from query %d: %d\n", slotNumber+1, factor);
+            pthread_mutex_unlock(&mutexBuffer);
+            // To see multithreaded implementation, uncomment sleep(1) for sleep between each factor
+            // sleep(1);
+        }
+        // Indicate to server that data has been read
+        sem_post(mutex[slotNumber]);
+        sem_post(empty[slotNumber]);
+        data->Shm->serverFlag[slotNumber] = 0;
+    }
+    // All server threads for slot finished
+    // Decrease active queries 
+    data->Shm->activeQueries--;
+    // Add slot number onto stack
+    // stackPush(&data->Shm->slotAllocation, slotNumber);
+    // Calculate time taken
+    gettimeofday(&end, 0);
+    long sec = end.tv_sec - begin.tv_sec;
+    long ms = end.tv_usec - begin.tv_usec;
+    double timer = sec + ms*1e-6;
+    // Let client know that query has been completed
+    pthread_mutex_lock(&mutexBuffer);
+    printf("\n\tQuery %d finished\n\tTime Taken: %.3f s\n\n", slotNumber+1, timer);
+    pthread_mutex_unlock(&mutexBuffer);
 }
