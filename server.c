@@ -14,7 +14,9 @@
 // Semaphore classes used in threads
 sem_t *full[10];
 sem_t *empty[10];
-sem_t *mutex[10]; 
+
+// Pointer to shared memory
+struct Memory *ShmPtr; 
 
 int main(int argc, char* argv[]){
     // Welcome text
@@ -26,7 +28,7 @@ int main(int argc, char* argv[]){
     // Initiate shared memory
     key_t ShmKey = ftok(".", 'a'); // Shared memory key using token of current path
     int ShmId = shmget(ShmKey, sizeof(struct Memory), IPC_CREAT | 0666); // Create shared memory
-    struct Memory *ShmPtr; // Pointer to shared memory
+    
     // Error handle for setting up shared memory
     if (ShmId < 0){
         printError("Cannot setup shared memory.");
@@ -42,57 +44,46 @@ int main(int argc, char* argv[]){
         printLog("Server has attached shared memory.");
     }
     // Set flags in shared memory and set slot stack
-    struct Stack* s = stackInit(10);
+    ShmPtr->number = 0;
     ShmPtr->clientFlag = 0;
     ShmPtr->activeQueries = 0;
+    ShmPtr->slotAllocationCounter = -1;
     for (int i = 9; i >= 0; --i){
         ShmPtr->serverFlag[i] = 0;
+        ShmPtr->slot[i] = 0;
         // Add slot elements onto stack
-        stackPush(s, i);
+        ShmPtr->slotAllocation[++ShmPtr->slotAllocationCounter] = i;
     }
     // Set shared memory slot stack
-    ShmPtr->slotAllocation = s;
 
-    // Init semaphores
+    // Init semaphores - create unique sem name
     char** sem1 = (char**) calloc(10, sizeof(char*));
     char** sem2 = (char**) calloc(10, sizeof(char*));
-    char** sem3 = (char**) calloc(10, sizeof(char*));
     // Create unique semaphore name for each semaphore
     for (int i = 0; i < 10; i++){
         // Allocate space for each token
         sem1[i] = (char*) calloc(10, sizeof(char));
         sem2[i] = (char*) calloc(10, sizeof(char));
-        sem3[i] = (char*) calloc(10, sizeof(char));
         // Assign each prefix
         char sem1Prefix[10] = "full";
         char sem2Prefix[10] = "empty";
-        char sem3Prefix[10] = "mutex";
         // Append i to each
         char append = 'a'+i;
         strncat(sem1Prefix, &append, 1);
         strncat(sem2Prefix, &append, 1);
-        strncat(sem3Prefix, &append, 1);
         // Assign to each semaphore char array
         sem1[i] = sem1Prefix;
         sem2[i] = sem2Prefix;
-        sem3[i] = sem3Prefix;
         // Post when server has data to write
         full[i] = sem_open(sem1Prefix, O_CREAT, 0666, 0);
         // Server can only write to 1 slot at a time
         empty[i] = sem_open(sem2Prefix, O_CREAT, 0666, 1);
-        // Mutal exclusion
-        mutex[i] = sem_open(sem3Prefix, O_CREAT, 0666, 1);
         // Handle if empty val starts at 0
-        int emptyVal, mutexVal;
+        int emptyVal;
         sem_getvalue(empty[i], &emptyVal);
-        sem_getvalue(mutex[i], &mutexVal);
         while (emptyVal < 1){
             sem_post(empty[i]);
             emptyVal++;
-        }
-        while (mutexVal < 1){
-            sem_post(mutex[i]);
-            mutexVal++;
         }
     }
 
@@ -114,14 +105,12 @@ int main(int argc, char* argv[]){
         // Store number locally on server
         unsigned int n = ShmPtr->number;
         // Allocate slot number from stack
-        int slotNumber = stackPop(ShmPtr->slotAllocation);
+        int slotNumber = ShmPtr->slotAllocation[ShmPtr->slotAllocationCounter--];
         // Increase active queries
         ShmPtr->activeQueries++;
         // Write back to client slot number
         ShmPtr->number = slotNumber;
-        // Tell client that server has read data
-        ShmPtr->clientFlag = 0;
-
+        
         // Print recieved data & reserved slot
         printLog("New data recieved from client:");
         printf("\tClient: %u\n", n);
@@ -129,18 +118,21 @@ int main(int argc, char* argv[]){
 
         // Hold thread ID
         pthread_t threads[32];
-
-        // // Rotate bit and 
+        
         for (int i = 0; i < 32; i++){
+            // Rotate n by i bits
+            unsigned int rotatedNumber = rightRotate(n, i);
             // Create data struct to send to thread
-            struct ThreadData data = {n, slotNumber, ShmPtr};
+            struct ThreadData data = {rotatedNumber, slotNumber};
             // Create thread
             if (pthread_create(&threads[i], NULL, &factorise, (void*) &data) != 0){
                 printError("Failed to create server thread.");
             }
-            // Sleep buffer between each factor
-            usleep(500);
+            // Sleep buffer between each thread - can be used if threads are too fast
+            // usleep(50);
         }
+        // Tell client that server has read data
+        ShmPtr->clientFlag = 0;
     }
     
     // Wait for active threads to finish
@@ -152,12 +144,14 @@ int main(int argc, char* argv[]){
     for (int i = 0; i < 10; i++){
         sem_close(full[i]);
         sem_close(empty[i]);
-        sem_close(mutex[i]);
+        sem_unlink(sem1[i]);
+        sem_unlink(sem2[i]);
     }
-    
-    printLog("Detaching memory...");
+
     // Detach and remove/destroy shared memory
+    printLog("Detaching memory...");
     shmdt((void*) ShmPtr);
+    printLog("Destroying shared memory...");
     shmctl(ShmId, IPC_RMID, NULL);
     // Close server
     printLog("Server closing.");
@@ -170,37 +164,44 @@ void* factorise(void* args){
     struct ThreadData *data = (struct ThreadData*) args;
     int slotNumber = data->slotNumber;
     int n = data->n;
+    int factor = 2; // First factor
+    // Calculate factors using trial division
 
-    // Sleep buffer between each factor
-    usleep(500);
+    // While factors are remaining
+    while (n > 1){
+        // Check if factor exists (no remainder)
+        if (n % factor == 0){
+            // Factor found - rite to slot - wait for slot to be free then write
+            sem_wait(empty[slotNumber]);
+            // Assign data to slot
+            ShmPtr->slot[slotNumber] = factor;
+            // New data is availible for client to read
+            ShmPtr->serverFlag[slotNumber] = 1;
+            // Post to client
+            sem_post(full[slotNumber]);
+            // Wait for client to respond
+            while (ShmPtr->serverFlag[slotNumber] == 1);
 
-    // Calculate factors
+            // Divide factor out of n
+            n /= factor;
+        } else {
+            // Add one to factor, then retry
+            factor++;
+        }
+    }
 
+    // All factors found, write to slot that thread is finished
+    
     // Wait for slot to be free
     sem_wait(empty[slotNumber]);
-    sem_wait(mutex[slotNumber]);
-    // Assign data to slot
-    data->Shm->slot[slotNumber] = n;
-    // Post to client
-    sem_post(mutex[slotNumber]);
-    sem_post(full[slotNumber]);
-
-    // New data is availible for client read
-    data->Shm->serverFlag[slotNumber] = 1;
-    while (data->Shm->serverFlag[slotNumber] == 1);
-
-    // Wait for slot to be free
-    sem_wait(empty[slotNumber]);
-    sem_wait(mutex[slotNumber]);
     // Thread finished
-    data->Shm->slot[slotNumber] = -1;
-    // New data is availible to read
-    // Post to client
-    sem_post(mutex[slotNumber]);
-    sem_post(full[slotNumber]);
-
+    ShmPtr->slot[slotNumber] = -1;
     // New data is availible for client read
-    data->Shm->serverFlag[slotNumber] = 1;
-    while (data->Shm->serverFlag[slotNumber] == 1);
+    ShmPtr->serverFlag[slotNumber] = 1;
+    // Post to client
+    sem_post(full[slotNumber]);
+    // Wait for client to respond
+    while (ShmPtr->serverFlag[slotNumber] == 1);
 
+    return NULL;
 }

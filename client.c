@@ -3,10 +3,12 @@
 // Semaphore classes used in threads
 sem_t *full[10];
 sem_t *empty[10];
-sem_t *mutex[10];
 
 // Mutex for client side message buffer
 pthread_mutex_t mutexBuffer;
+
+// Pointer to shared memory
+struct Memory *ShmPtr; 
 
 int main(int argc, char* argv[]){
     // Welcome text 
@@ -18,7 +20,6 @@ int main(int argc, char* argv[]){
     // Set up shared memory
     key_t ShmKey = ftok(".", 'a'); // Shared memory key using token of current path
     int ShmId = shmget(ShmKey, sizeof(struct Memory), 0666); // Create shared memory
-    struct Memory *ShmPtr; // Pointer to shared memory
     // Error handle for setting up shared memory
     if (ShmId < 0){
         printError("Cannot setup shared memory.");
@@ -41,43 +42,31 @@ int main(int argc, char* argv[]){
     // Init semaphores
     char** sem1 = (char**) calloc(10, sizeof(char*));
     char** sem2 = (char**) calloc(10, sizeof(char*));
-    char** sem3 = (char**) calloc(10, sizeof(char*));
     // Create unique semaphore name for each semaphore
     for (int i = 0; i < 10; i++){
         // Allocate space for each token
         sem1[i] = (char*) calloc(10, sizeof(char));
         sem2[i] = (char*) calloc(10, sizeof(char));
-        sem3[i] = (char*) calloc(10, sizeof(char));
         // Assign each prefix
         char sem1Prefix[10] = "full";
         char sem2Prefix[10] = "empty";
-        char sem3Prefix[10] = "mutex";
         // Append i to each prefix for unique name
         char append = 'a'+i;
         strncat(sem1Prefix, &append, 1);
         strncat(sem2Prefix, &append, 1);
-        strncat(sem3Prefix, &append, 1);
         // Assign to each semaphore char array
         sem1[i] = sem1Prefix;
         sem2[i] = sem2Prefix;
-        sem3[i] = sem3Prefix;
         // Post when server has data to write
         full[i] = sem_open(sem1Prefix, O_CREAT, 0666, 0);
         // Server can only write to 1 slot at a time
         empty[i] = sem_open(sem2Prefix, O_CREAT, 0666, 1);
-        // Mutal exclusion
-        mutex[i] = sem_open(sem3Prefix, O_CREAT, 0666, 1);
         // Handle if empty val or mutex val starts at 0
-        int emptyVal, mutexVal;
+        int emptyVal;
         sem_getvalue(empty[i], &emptyVal);
-        sem_getvalue(mutex[i], &mutexVal);
         while (emptyVal < 1){
             sem_post(empty[i]);
             emptyVal++;
-        }
-        while (mutexVal < 1){
-            sem_post(mutex[i]);
-            mutexVal++;
         }
     }
 
@@ -137,7 +126,7 @@ int main(int argc, char* argv[]){
             while (ShmPtr->clientFlag == 1);
 
             // Set data to be sent to thread
-            struct ThreadData data = {0, ShmPtr->number, ShmPtr};
+            struct ThreadData data = {0, ShmPtr->number};
             // Allocate consumer for particular slot
             pthread_t thread;
             // Create thread
@@ -156,10 +145,8 @@ int main(int argc, char* argv[]){
     for (int i = 0; i < 10; i++){
         sem_close(full[i]);
         sem_close(empty[i]);
-        sem_close(mutex[i]);
         sem_unlink(sem1[i]);
         sem_unlink(sem2[i]);
-        sem_unlink(sem3[i]);
     }
     // Detach shared memory
     shmdt((void*) ShmPtr);
@@ -182,18 +169,16 @@ void* slotConsumer(void* args){
     while (1){
         // Await for slot buffer to be filled
         sem_wait(full[slotNumber]);
-        sem_wait(mutex[slotNumber]);
         // Assign factor
-        int factor = data->Shm->slot[slotNumber];
+        int factor = ShmPtr->slot[slotNumber];
+        // Indicate to server that data has been read
+        ShmPtr->serverFlag[slotNumber] = 0;
+
         // Check if thread is finished
         if (factor == -1){
             finishedThreads++;
             // If all 32 threads finished, destroy thread
             if (finishedThreads == 32){
-                // Indicate to server that data has been read
-                sem_post(mutex[slotNumber]);
-                sem_post(empty[slotNumber]);
-                data->Shm->serverFlag[slotNumber] = 0;
                 // All threads completed
                 break;
             }
@@ -205,16 +190,13 @@ void* slotConsumer(void* args){
             // To see multithreaded implementation, uncomment sleep(1) for sleep between each factor
             // sleep(1);
         }
-        // Indicate to server that data has been read
-        sem_post(mutex[slotNumber]);
+        
         sem_post(empty[slotNumber]);
-        data->Shm->serverFlag[slotNumber] = 0;
     }
     // All server threads for slot finished
-    // Decrease active queries 
-    data->Shm->activeQueries--;
+    
     // Add slot number onto stack
-    // stackPush(&data->Shm->slotAllocation, slotNumber);
+    ShmPtr->slotAllocation[++ShmPtr->slotAllocationCounter] = slotNumber;
     // Calculate time taken
     gettimeofday(&end, 0);
     long sec = end.tv_sec - begin.tv_sec;
@@ -224,4 +206,12 @@ void* slotConsumer(void* args){
     pthread_mutex_lock(&mutexBuffer);
     printf("\n\tQuery %d finished\n\tTime Taken: %.3f s\n\n", slotNumber+1, timer);
     pthread_mutex_unlock(&mutexBuffer);
+    // Indicate to server that data has been read
+    ShmPtr->serverFlag[slotNumber] = 0;
+    sem_post(empty[slotNumber]);
+    
+    // Decrease active queries 
+    ShmPtr->activeQueries--;
+
+    return NULL;
 }

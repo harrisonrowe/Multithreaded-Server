@@ -29,24 +29,17 @@ struct Memory{
     int slot[10];
     int activeQueries;
     // Flags
-    int clientFlag;
     int serverFlag[10];
+    int clientFlag;
     // Slot stack
-    struct Stack* slotAllocation;
+    int slotAllocation[10];
+    int slotAllocationCounter;
 };
 
 // Data package to sent to shared memory
 struct ThreadData{
     unsigned int n;
     int slotNumber;
-    struct Memory* Shm;
-};
-
-// Stack for slots
-struct Stack {
-    int* stack;
-    int cap;
-    int top;
 };
 
 #endif
